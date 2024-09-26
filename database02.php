@@ -14,13 +14,15 @@ echo "Server running on port $port\n";
 
 // Simple HTTP response for incoming requests
 function handleRequest($client) {
-    if (is_resource($client)) {
+    if (is_resource($client) && !feof($client)) {
         fwrite($client, "HTTP/1.1 200 OK\r\n");
         fwrite($client, "Content-Type: text/plain\r\n");
         fwrite($client, "Connection: close\r\n");
         fwrite($client, "\r\n");
         fwrite($client, "Background process running as a web service!\n");
         fclose($client);
+    } else {
+        echo "Client disconnected before data could be sent.\n";
     }
 }
 

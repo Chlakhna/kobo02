@@ -26,6 +26,7 @@ function handleRequest($client) {
     }
 }
 
+
 // Keep accepting incoming connections
 while ($client = @stream_socket_accept($socket, -1)) {
     handleRequest($client);

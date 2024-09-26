@@ -1,23 +1,62 @@
 <?php
-// Database connection details
-$servername = 'mysql-2b9c8eba-chlakhna702-5683.h.aivencloud.com';  
-$username = 'avnadmin';         
-$password = 'AVNS_EMM0l9B433aCexcaKkt';   
-$dbname = 'dpa';            
-$port = 10605;
+// Bind to a port for Render Web Service
+$port = getenv('PORT'); // Render will provide the PORT environment variable
 
+// Start a simple HTTP server
+$socket = stream_socket_server("tcp://0.0.0.0:$port", $errno, $errstr);
+
+if (!$socket) {
+    echo "Error: Unable to create socket: $errstr ($errno)\n";
+    exit(1);
+}
+
+echo "Server running on port $port\n";
+
+// Simple HTTP response for incoming requests (this will just return a simple message)
+function handleRequest($client) {
+    if (is_resource($client)) {
+        // Check if the client is still connected before attempting to write
+        fwrite($client, "HTTP/1.1 200 OK\r\n");
+        fwrite($client, "Content-Type: text/plain\r\n");
+        fwrite($client, "Connection: close\r\n");
+        fwrite($client, "\r\n");
+        fwrite($client, "Background process running as a web service!\n");
+        fclose($client);
+    } else {
+        // If client is disconnected, skip writing
+        echo "Client disconnected before data could be sent.\n";
+    }
+}
+
+// Keep accepting incoming connections in the background
+while ($client = @stream_socket_accept($socket, -1)) {
+    handleRequest($client);
+}
+
+ignore_user_abort(true);
+
+// --- Your existing background process code starts here ---
+
+// Get environment variables for database connection
+$servername = getenv('DB_SERVERNAME');  
+$username = getenv('DB_USERNAME');         
+$password = getenv('DB_PASSWORD');   
+$dbname = getenv('DB_NAME');            
+$port = getenv('DB_PORT');
+
+// KoboToolbox API details
 $kobo_api_url = 'https://eu.kobotoolbox.org/api/v2/assets/ayR6wufB7edf9Ft8AFNVPi/data/?format=json&_last_updated__gt=2024-09-18+05%3A49%3A09';
 $kobo_token = 'ea97948efb2a6f133463d617277b69caff728630';  
 
+// Connect to the database
 $conn = new mysqli($servername, $username, $password, $dbname, $port);
-$conn->set_charset("utf8mb4");
+
 if ($conn->connect_error) {
     die("Connection failed: " . $conn->connect_error);
-} else {
-    echo "Connected to the database successfully!<br>";
 }
 
-$sql_last_update = "SELECT MAX(submission_time) as last_updated_time FROM kobo_data02";
+// Fetch the latest submission time from the database
+$sql_last_update = "SELECT MAX(submission_time) as last_updated_time FROM kobo_data02_1";
 $result = $conn->query($sql_last_update);
 $last_updated_time = null;
 
@@ -25,13 +64,19 @@ if ($result->num_rows > 0) {
     $row = $result->fetch_assoc();
     $last_updated_time = $row['last_updated_time'];
 }
+
+// Log the last updated time
+file_put_contents('debug_log.txt', "Last Updated Time: $last_updated_time\n", FILE_APPEND);
+
+// Append the last updated time to the KoboToolbox API URL
 if ($last_updated_time) {
     $kobo_api_url .= '&_last_updated__gt=' . urlencode($last_updated_time);
-    echo "Fetching data submitted after: " . $last_updated_time . "<br>";
-} else {
-    echo "Fetching all data since no previous submissions found.<br>";
 }
 
+// Log the final API URL
+file_put_contents('debug_log.txt', "API URL: $kobo_api_url\n", FILE_APPEND);
+
+// Set up the cURL request to fetch data from KoboToolbox
 $ch = curl_init();
 curl_setopt($ch, CURLOPT_URL, $kobo_api_url);
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
@@ -39,21 +84,28 @@ curl_setopt($ch, CURLOPT_HTTPHEADER, [
     'Authorization: Token ' . $kobo_token,
 ]);
 
+// Execute the cURL request
 $response = curl_exec($ch);
 $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
+// Decode the JSON response
 $data = json_decode($response, true);
 
-if ($http_code == 200 && isset($data['results'])) {
-    echo "Successfully fetched data from KoboToolbox.<br>";
-    
-    // Print the API response for debugging
-    echo "<pre>";
-    print_r($data);
-    echo "</pre>";
+// Log the response from KoboToolbox
+file_put_contents('kobo_response_log.txt', print_r($data, true), FILE_APPEND);
 
+// Check if data is received
+if ($http_code == 200 && isset($data['results'])) {
+    $counter = 0; // Optional counter to limit the number of records processed at once
     foreach ($data['results'] as $record) {
+        if ($counter >= 100) break; // Optional limit to process only a certain number of records
+        $counter++;
+
+       
+        
+        
+
         // Retrieve fields from KoboToolbox JSON data
         $submission_id = mysqli_real_escape_string($conn, $record['_id']);
         $tstart = mysqli_real_escape_string($conn, $record['Tstart']);
@@ -106,16 +158,14 @@ if ($http_code == 200 && isset($data['results'])) {
         $submission_time = mysqli_real_escape_string($conn, $record['_submission_time']);
 
 
+
         // Check if the submission already exists in the database
-        $sql_check = "SELECT * FROM kobo_data02 WHERE submission_id = '$submission_id'";
+        $sql_check = "SELECT * FROM kobo_data02_1 WHERE submission_id = '$submission_id'";
         $result_check = $conn->query($sql_check);
 
         if ($result_check->num_rows > 0) {
-            echo "Record with submission ID $submission_id exists. Updating record...<br>";
-
             // Update the existing record
-            $sql_update = "UPDATE kobo_data02 SET 
-                submission_id = '$submission_id',
+            $sql_update = "UPDATE kobo_data02_1 SET 
                 tstart = '$tstart', 
                 tend = '$tend', 
                 ttoday = '$ttoday', 
@@ -167,15 +217,14 @@ if ($http_code == 200 && isset($data['results'])) {
                 WHERE submission_id = '$submission_id'";
 
             if ($conn->query($sql_update) === TRUE) {
-                echo "Record updated successfully for submission ID $submission_id<br>";
+                echo "Record updated successfully for submission ID $submission_id\n";
             } else {
-                echo "Error updating record: " . $conn->error . "<br>";
+                echo "Error updating record: " . $conn->error;
             }
         } else {
-            echo "No record found with submission ID $submission_id. Inserting new record...<br>";
-
             // Insert a new record
-            $sql_insert = "INSERT INTO kobo_data02 (
+            $sql_insert = "INSERT INTO kobo_data02_1 (
+               
                 submission_id, tstart, tend, ttoday, username, phonenumber, deviceid, name_collection, 
                 date_interview, name_interview, sex_interview, name_respon, province, district, commune, village,
                 water_polution, water_polution_des, land_overlap, land_overlap_des, land_erosion, land_ero_des,
@@ -194,29 +243,25 @@ if ($http_code == 200 && isset($data['results'])) {
                 '$rapes_desciption', '$murder_six_months', '$murder_description', '$laterite_in_water', 
                 '$laterite_in_water_des', '$animal_lost_or_deaths', '$animal_lost_or_deaths_des', '$migration', 
                 '$prostitution', '$women_work', '$comments', '$ifinish', '$instance_id', '$submission_time')";
-                
+
             if ($conn->query($sql_insert) === TRUE) {
-                echo "New record created successfully for submission ID $submission_id<br>";
+                echo "New record created successfully for submission ID $submission_id\n";
             } else {
-                echo "Error inserting new record: " . $conn->error . "<br>";
+                echo "Error inserting new record: " . $conn->error;
             }
         }
     }
 } else {
-    echo "Failed to retrieve data from KoboToolbox. HTTP Code: " . $http_code . "<br>";
+    echo "Failed to retrieve data from KoboToolbox. HTTP Code: " . $http_code;
     file_put_contents('error_log.txt', "Kobo API response: " . $response . "\n", FILE_APPEND); 
 }
 
-// Display PHP errors for further debugging
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
-
+// Close the MySQL connection
 $conn->close();
 ?>
-<script type="text/javascript">
-// Refresh the page every 600000 milliseconds (10 minutes)
-setTimeout(function(){
-   window.location.reload(1);
-}, 600000);
-</script>
+
+
+
+
+
+
